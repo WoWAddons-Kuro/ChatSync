@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased (WoW Forever)
+
+### Now runs on WoW Forever (Interface 16001, Mainline UI code)
+
+- **Fixed: channels and message types silently not applying.** The Mainline UI replaced the
+  `ChatFrame_AddMessageGroup` / `ChatFrame_AddChannel` family of functions with methods on the
+  chat frame. ChatSync now calls whichever the client has, so profiles restore filters on both
+  Classic Era and Forever. Auto-save hooks the new methods too.
+- **Tab order is saved and restored.** Previously only "docked or not" was kept, so reordered
+  tabs came back in window-number order.
+- **Lock state and "make uninteractable"** are now applied (they were saved but ignored).
+- **Floating window position is resolution-independent.** Uses the game's own screen-fraction
+  position store, so a layout saved at one resolution / UI scale lands correctly on a character
+  using another.
+- **Chat text colors sync.** The per-chat-type colors (Say, Guild, Whisper, ...) and the
+  "color names by class" flags are part of the profile now.
+- **Stray windows are closed.** Applying a profile closes extra custom windows the character has
+  that the profile doesn't (General / Combat Log / Voice are never closed).
+- New windows are created without Blizzard's default filter set, so nothing leaks into them.
+
+### Don't sync certain channels
+
+- New **Don't sync channels** picker next to the ping channel picker. Tick a channel and it is
+  never written into a profile and never added or removed when a profile is applied - meant for
+  password-protected channels that addons join on their own (the game gives addons no way to
+  detect a password, so this is a manual list).
+
+Profiles saved by older versions are flagged "re-save" (they lack tab order and colors); the
+usual prompt offers to update them from the current character.
+
 ## 1.2.0
 
 ### Patch 1.15.9 brought Edit Mode to Classic

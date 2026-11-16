@@ -81,7 +81,53 @@ local function msg(text) print(PREFIX .. text) end
 local BMC_URL = "buymeacoffee.com/vbaustad"
 
 local NUMWIN = NUM_CHAT_WINDOWS or 10
-local SNAP_VERSION = 2   -- 2 = snapshot includes window size/position; 1/nil = older, no geometry
+-- Snapshot format version. A profile with a lower version is "stale" and the user is offered a re-save.
+--   1/nil = names/filters only   2 = + window size/position
+--   3     = + tab order (dockIndex), resolution-independent saved position, chat type colors
+local SNAP_VERSION = 3
+
+-- ---------------------------------------------------------------------------
+-- Blizzard API compatibility. Classic Era exposes ChatFrame_AddMessageGroup(cf, g)
+-- etc. as globals; Mainline (WoW Forever) replaced them with ChatFrameMixin METHODS
+-- (cf:AddMessageGroup(g)) and the globals no longer exist. Prefer the method.
+-- ---------------------------------------------------------------------------
+local function CF_AddMessageGroup(cf, g)
+    if cf.AddMessageGroup then return cf:AddMessageGroup(g) end
+    return ChatFrame_AddMessageGroup(cf, g)
+end
+local function CF_RemoveAllMessageGroups(cf)
+    if cf.RemoveAllMessageGroups then return cf:RemoveAllMessageGroups() end
+    return ChatFrame_RemoveAllMessageGroups(cf)
+end
+local function CF_AddChannel(cf, c)
+    if cf.AddChannel then return cf:AddChannel(c) end
+    return ChatFrame_AddChannel(cf, c)
+end
+local function CF_RemoveAllChannels(cf)
+    if cf.RemoveAllChannels then return cf:RemoveAllChannels() end
+    return ChatFrame_RemoveAllChannels(cf)
+end
+
+-- Channels the user told us NOT to sync (e.g. password-protected channels an addon
+-- joins on its own). The game API gives no "has password" flag, so this is an explicit
+-- per-channel list (ChatSyncDB.ignoreChannels[baseName] = true), case-insensitive.
+local function IsIgnoredChannel(name)
+    local ign = ChatSyncDB and ChatSyncDB.ignoreChannels
+    if not ign or type(name) ~= "string" then return false end
+    if ign[name] then return true end
+    local lname = name:lower()
+    for k in pairs(ign) do if type(k) == "string" and k:lower() == lname then return true end end
+    return false
+end
+
+-- Chat types whose text color we sync. ChatTypeGroup is a plain table of group -> events
+-- (on Mainline, ChatTypeInfo itself is a wiped proxy, so pairs() on it yields nothing).
+-- Numbered channel colors (CHANNEL1..N) are skipped: channel numbers differ per character.
+local function ChatColorTypes()
+    local out = {}
+    for g in pairs(ChatTypeGroup or {}) do if not g:match("^CHANNEL%d") then out[#out + 1] = g end end
+    return out
+end
 
 -- Auto-save state. suppressAutoSave is true during our own Apply() and until login
 -- settles, so applying a profile / the login chat init can't trigger a save.
@@ -96,7 +142,7 @@ end
 -- Capture: read the current character's chat window layout into a snapshot.
 -- ---------------------------------------------------------------------------
 local function Capture()
-    local snap = { windows = {} }
+    local snap = { windows = {}, colors = {} }
     for i = 1, NUMWIN do
         local name, fontSize, r, g, b, alpha, shown, locked, docked, uninteractable = GetChatWindowInfo(i)
         if name and name ~= "" then
@@ -105,18 +151,22 @@ local function Capture()
                 r = r, g = g, b = b, alpha = alpha,
                 shown = shown and true or false,
                 locked = locked and true or false,
-                docked = docked and true or false,           -- docked is a position id or nil
+                docked = docked and true or false,           -- docked is a dock POSITION (1 = ChatFrame1) or nil
+                dockIndex = (type(docked) == "number") and docked or nil,   -- keeps the tab order
                 uninteractable = uninteractable and true or false,
                 messages = {}, channels = {},
             }
             for _, m in ipairs({ GetChatWindowMessages(i) }) do
                 if type(m) == "string" and m ~= "" then w.messages[#w.messages + 1] = m end
             end
-            -- GetChatWindowChannels returns name, number pairs - keep the names.
+            -- GetChatWindowChannels returns name, number pairs - keep the names, minus
+            -- any channel the user asked us not to sync.
             local chs = { GetChatWindowChannels(i) }
             for j = 1, #chs, 2 do
                 local cname = chs[j]
-                if type(cname) == "string" and cname ~= "" then w.channels[#w.channels + 1] = cname end
+                if type(cname) == "string" and cname ~= "" and not IsIgnoredChannel(cname) then
+                    w.channels[#w.channels + 1] = cname
+                end
             end
             -- Geometry: capture for the main frame (ChatFrame1 = the dock anchor; the
             -- whole dock moves/sizes with it) and for any floating window. Other docked
@@ -126,8 +176,25 @@ local function Capture()
                 local p, _, rp, x, y = cf:GetPoint()
                 if p then w.point = { p, rp, x, y } end
                 w.width, w.height = cf:GetWidth(), cf:GetHeight()
+                -- Blizzard's own store: anchor point + screen FRACTIONS, so it replays
+                -- correctly on a character using a different resolution / UI scale.
+                if GetChatWindowSavedPosition then
+                    local sp, sx, sy = GetChatWindowSavedPosition(i)
+                    if sp then w.savedPos = { sp, sx, sy } end
+                end
+                if GetChatWindowSavedDimensions then
+                    local sw, sh = GetChatWindowSavedDimensions(i)
+                    if sw and sh and sw > 0 and sh > 0 then w.width, w.height = sw, sh end
+                end
             end
             snap.windows[#snap.windows + 1] = w
+        end
+    end
+    -- Chat type text colors + "color names by class" flags (per-character in the client).
+    for _, ctype in ipairs(ChatColorTypes()) do
+        local info = ChatTypeInfo and ChatTypeInfo[ctype]
+        if info and info.r then
+            snap.colors[ctype] = { r = info.r, g = info.g, b = info.b, cls = info.colorNameByClass and true or false }
         end
     end
     snap.count = #snap.windows
@@ -157,22 +224,40 @@ end
 
 -- ---------------------------------------------------------------------------
 -- Apply: rebuild the chat windows on this character from a snapshot.
+--
+-- Order matters on Mainline (WoW Forever): FCF_DockFrame appends a tab at the
+-- end and is a no-op if the frame is already docked, so to reproduce the saved
+-- tab ORDER we undock every non-primary window first and re-dock in saved order.
+-- Floating windows get Blizzard's own screen-fraction position store
+-- (SetChatWindowSavedPosition / SavedDimensions + FCF_RestorePositionAndDimensions)
+-- so the layout survives different resolutions / UI scales between characters.
 -- ---------------------------------------------------------------------------
+local function IsBuiltinWindow(cf, i)
+    if IsBuiltinChatWindow then return IsBuiltinChatWindow(cf) end
+    return i <= 2   -- Classic Era: General + Combat Log
+end
+
 local function Apply(snap)
     if not snap or not snap.windows or #snap.windows == 0 then return false end
     local prevSuppress = suppressAutoSave
     suppressAutoSave = true                     -- our own FCF calls must not auto-save
     local n = #snap.windows
+    local frames = {}                           -- [i] = the ChatFrame we configured for snapshot window i
+
+    -- Pass 1: make sure each window exists and carries its per-window settings.
     for i = 1, n do
         local w = snap.windows[i]
         -- Chat frame objects (ChatFrame1..N) always exist; a window only counts as
         -- "active" once it has a name. If this slot isn't active yet, open it - that
         -- lands on the lowest free index, which is this one when we build in order.
+        -- (FCF_OpenNewWindow returns the frame it actually used; trust that.)
+        local cf = _G["ChatFrame" .. i]
         local curName = GetChatWindowInfo(i)
         if (not curName or curName == "") and FCF_OpenNewWindow then
-            pcall(FCF_OpenNewWindow, w.name)   -- creates + docks the next available window
+            local ok, newFrame = pcall(FCF_OpenNewWindow, w.name, true)   -- true = no default SAY/GUILD/... set
+            if ok and newFrame then cf = newFrame end
         end
-        local cf = _G["ChatFrame" .. i]
+        frames[i] = cf
         if cf then
             pcall(FCF_SetWindowName, cf, w.name)
             if w.r then pcall(FCF_SetWindowColor, cf, w.r, w.g, w.b) end
@@ -180,47 +265,110 @@ local function Apply(snap)
             if w.fontSize and w.fontSize > 0 then pcall(FCF_SetChatWindowFontSize, nil, cf, w.fontSize) end
 
             -- Message types (Say / Guild / Whisper / ...): clear then re-add.
-            pcall(ChatFrame_RemoveAllMessageGroups, cf)
-            for _, m in ipairs(w.messages) do pcall(ChatFrame_AddMessageGroup, cf, m) end
+            pcall(CF_RemoveAllMessageGroups, cf)
+            for _, m in ipairs(w.messages or {}) do pcall(CF_AddMessageGroup, cf, m) end
 
-            -- Channels: clear then re-add (ChatFrame_AddChannel re-joins as needed).
-            pcall(ChatFrame_RemoveAllChannels, cf)
-            for _, c in ipairs(w.channels) do pcall(ChatFrame_AddChannel, cf, c) end
+            -- Channels: clear then re-add (AddChannel re-joins as needed). Channels on the
+            -- "don't sync" list are left exactly as they are on this character.
+            local keep = {}
+            local chs = { GetChatWindowChannels(cf:GetID()) }
+            for j = 1, #chs, 2 do
+                if type(chs[j]) == "string" and IsIgnoredChannel(chs[j]) then keep[#keep + 1] = chs[j] end
+            end
+            pcall(CF_RemoveAllChannels, cf)
+            for _, c in ipairs(w.channels or {}) do
+                if not IsIgnoredChannel(c) then pcall(CF_AddChannel, cf, c) end
+            end
+            for _, c in ipairs(keep) do pcall(CF_AddChannel, cf, c) end
 
-            -- Size & position. ChatFrame1 is the dock anchor - moving/sizing it moves the
-            -- whole dock. Other docked tabs follow it; floating tabs get their own geometry.
-            if i == 1 then
-                -- Edit Mode owns the main window's geometry (and shares it account-wide
-                -- already). Only place it ourselves on clients without Edit Mode.
-                if not EditModeOwnsMainChat() then
-                    if w.point then
-                        cf:SetUserPlaced(true); cf:ClearAllPoints()
-                        pcall(cf.SetPoint, cf, w.point[1], UIParent, w.point[2], w.point[3], w.point[4])
-                    end
-                    if w.width and w.height then pcall(cf.SetSize, cf, w.width, w.height) end
-                end
-            elseif w.docked then
-                pcall(FCF_DockFrame, cf)
+            if FCF_SetUninteractable then pcall(FCF_SetUninteractable, cf, w.uninteractable and true or false) end
+        end
+    end
+
+    -- Pass 2: dock layout. Undock every non-primary window, then re-dock in the saved
+    -- tab order (dockIndex; legacy v2 profiles only have docked=true -> window order).
+    for i = 2, n do
+        local cf = frames[i]
+        if cf and cf.isDocked then pcall(FCF_UnDockFrame, cf) end
+    end
+    local dockOrder = {}
+    for i = 2, n do
+        local w = snap.windows[i]
+        if frames[i] and (w.dockIndex or w.docked) then
+            dockOrder[#dockOrder + 1] = { i = i, idx = w.dockIndex or (100 + i) }
+        end
+    end
+    table.sort(dockOrder, function(a, b) if a.idx ~= b.idx then return a.idx < b.idx end return a.i < b.i end)
+    for _, e in ipairs(dockOrder) do pcall(FCF_DockFrame, frames[e.i]) end   -- appends -> saved order
+
+    -- Pass 3: floating windows - geometry, lock, shown state.
+    for i = 2, n do
+        local w, cf = snap.windows[i], frames[i]
+        if cf and not (w.dockIndex or w.docked) then
+            if w.savedPos and SetChatWindowSavedPosition and FCF_RestorePositionAndDimensions then
+                pcall(SetChatWindowSavedPosition, cf:GetID(), w.savedPos[1], w.savedPos[2], w.savedPos[3])
+                if w.width and w.height then pcall(SetChatWindowSavedDimensions, cf:GetID(), w.width, w.height) end
+                pcall(FCF_RestorePositionAndDimensions, cf)
             else
-                pcall(FCF_UnDockFrame, cf)
                 if w.point then
                     cf:SetUserPlaced(true); cf:ClearAllPoints()
                     pcall(cf.SetPoint, cf, w.point[1], UIParent, w.point[2], w.point[3], w.point[4])
                 end
                 if w.width and w.height then pcall(cf.SetSize, cf, w.width, w.height) end
-                if w.shown then cf:Show() else cf:Hide() end
+            end
+            if FCF_SetLocked then pcall(FCF_SetLocked, cf, w.locked and true or false) end
+            if SetChatWindowShown then pcall(SetChatWindowShown, cf:GetID(), w.shown and true or false) end
+            local tab = _G[cf:GetName() .. "Tab"]
+            if w.shown then
+                cf:Show(); if tab then tab:Show() end
+            else
+                cf:Hide(); if tab then tab:Hide() end
             end
         end
     end
-    -- Let Blizzard persist the new positions/dimensions to the character's layout.
-    for i = 1, n do
-        local cf = _G["ChatFrame" .. i]
-        if cf then pcall(FCF_SavePositionAndDimensions, cf) end
+
+    -- ChatFrame1 is the dock anchor - moving/sizing it moves the whole dock. Edit Mode
+    -- owns its geometry (and shares it account-wide) where Edit Mode exists; only place
+    -- it ourselves on clients without Edit Mode.
+    local cf1, w1 = frames[1], snap.windows[1]
+    if cf1 and not EditModeOwnsMainChat() then
+        if w1.point then
+            cf1:SetUserPlaced(true); cf1:ClearAllPoints()
+            pcall(cf1.SetPoint, cf1, w1.point[1], UIParent, w1.point[2], w1.point[3], w1.point[4])
+        end
+        if w1.width and w1.height then pcall(cf1.SetSize, cf1, w1.width, w1.height) end
     end
+
+    -- Pass 4: close stray windows this character has that the profile doesn't (built-in
+    -- windows - General / Combat Log / Voice - are never closed, only left alone).
+    for i = n + 1, NUMWIN do
+        local cf = _G["ChatFrame" .. i]
+        local nm = GetChatWindowInfo(i)
+        if cf and nm and nm ~= "" and not IsBuiltinWindow(cf, i) and FCF_Close then
+            pcall(FCF_Close, cf)
+        end
+    end
+
+    -- Let Blizzard persist the new positions/dimensions to the character's layout.
+    -- (ChatFrame1 counts as docked but is the anchor, so always save it too.)
+    for i = 1, n do
+        local cf = frames[i]
+        if cf and (i == 1 or not cf.isDocked) then pcall(FCF_SavePositionAndDimensions, cf) end
+    end
+    if FCF_SelectDockFrame and ChatFrame1 then pcall(FCF_SelectDockFrame, ChatFrame1) end
+
+    -- Chat type colors (Say / Guild / Whisper / ... text colors + class-colored names).
+    -- Per-character in the client, so they need syncing too.
+    if snap.colors and ChangeChatColor then
+        for ctype, c in pairs(snap.colors) do
+            if c.r then pcall(ChangeChatColor, ctype, c.r, c.g, c.b) end
+            if c.cls ~= nil and SetChatColorNameByClass then pcall(SetChatColorNameByClass, ctype, c.cls) end
+        end
+    end
+
     suppressAutoSave = prevSuppress
     -- Say so rather than let it look like the profile half-failed: the main window
     -- stays where Edit Mode put it, which is already the same on every character.
-    local w1 = snap.windows[1]
     if EditModeOwnsMainChat() and w1 and (w1.point or w1.width) then
         msg("main window position/size now comes from Edit Mode (shared account-wide) - "
             .. "tabs, channels and floating windows applied as usual.")
@@ -245,6 +393,8 @@ local function DB()
     ChatSyncDB.ping = ChatSyncDB.ping or { whisper = true, guild = false, party = false }
     ChatSyncDB.ping.channels = ChatSyncDB.ping.channels or {}   -- [custom channel base name] = true
     ChatSyncDB.pingSound = ChatSyncDB.pingSound or "blip"   -- "Tech blip" (falls back if nil here)
+    -- Channels excluded from profiles entirely (never captured, never touched on apply).
+    ChatSyncDB.ignoreChannels = ChatSyncDB.ignoreChannels or {}   -- [channel base name] = true
     return ChatSyncDB
 end
 
@@ -276,11 +426,25 @@ end
 for _, fn in ipairs({
     "FCF_SavePositionAndDimensions", "FCF_DockFrame", "FCF_UnDockFrame", "FCF_Close",
     "FCF_OpenNewWindow", "FCF_SetWindowName", "FCF_SetWindowColor", "FCF_SetWindowAlpha",
-    "FCF_SetChatWindowFontSize", "ChatFrame_AddChannel", "ChatFrame_RemoveChannel",
+    "FCF_SetChatWindowFontSize", "FCF_SetLocked", "FCF_SetUninteractable",
+    "ChangeChatColor", "SetChatColorNameByClass",
+    -- Classic Era globals (gone on Mainline - see per-frame method hooks below).
+    "ChatFrame_AddChannel", "ChatFrame_RemoveChannel",
     "ChatFrame_RemoveAllChannels", "ChatFrame_AddMessageGroup", "ChatFrame_RemoveMessageGroup",
     "ChatFrame_RemoveAllMessageGroups",
 }) do
     if type(_G[fn]) == "function" then hooksecurefunc(fn, ScheduleAutoSave) end
+end
+-- Mainline (WoW Forever): message-group / channel edits are ChatFrameMixin METHODS copied onto
+-- each frame, so hook them per frame (hooking the mixin table would miss existing frames).
+for i = 1, NUMWIN do
+    local cf = _G["ChatFrame" .. i]
+    if cf then
+        for _, m in ipairs({ "AddMessageGroup", "RemoveMessageGroup", "RemoveAllMessageGroups",
+                             "AddChannel", "RemoveChannel", "RemoveAllChannels" }) do
+            if type(cf[m]) == "function" then hooksecurefunc(cf, m, ScheduleAutoSave) end
+        end
+    end
 end
 
 local function DoSaveProfile(name)
@@ -364,8 +528,8 @@ StaticPopupDialogs["CHATSYNC_DELETE"] = {
     timeout = 0, whileDead = true, hideOnEscape = true, preferredIndex = 3,
 }
 StaticPopupDialogs["CHATSYNC_UPDATE_STALE"] = {
-    text = "Chat Sync: your profile \"%s\" is missing window size & position (it was saved by an older version)."
-        .. "\n\nUpdate it now from THIS character's current chat layout?",
+    text = "Chat Sync: your profile \"%s\" was saved by an older version and is missing newer settings"
+        .. " (tab order, lock state, chat colors, window size/position).\n\nUpdate it now from THIS character's current chat layout?",
     button1 = "Update", button2 = "Not now",
     OnAccept = function(_, data) DoSaveProfile(data) end,
     timeout = 0, whileDead = true, hideOnEscape = true, preferredIndex = 3,
@@ -669,61 +833,79 @@ local function BuildOptions()
     pingToggle(300, "guild",   "Guild")
     pingToggle(380, "party",   "Party")
 
-    -- Custom channels: a multi-select dropdown of the channels you're currently in (rebuilt
-    -- each time it opens, since you join/leave channels). Stored by base name.
-    local chanBtn = MakeDropdown(pingGroup, 180)
-    chanBtn:SetPoint("TOPLEFT", 4, -50)
-    local function chanCount() local n = 0; for _ in pairs(DB().ping.channels or {}) do n = n + 1 end; return n end
-    local function refreshChanBtn()
-        local n = chanCount()
-        chanBtn.Text:SetText(n > 0 and ("Custom channels: " .. n) or "Custom channels...")
-    end
-    refreshChanBtn()
-    local chanPop, chanRows = nil, {}
-    local function refreshChanPop()
-        local list = { GetChannelList() }   -- id, name, disabled, id, name, disabled, ...
-        local names = {}
-        for i = 2, #list, 3 do
-            local nm = list[i]
-            if type(nm) == "string" and nm ~= "" then names[#names + 1] = nm end
+    -- Multi-select channel picker: a dropdown opening a checklist of the channels you're
+    -- currently in (rebuilt each time it opens, since you join/leave channels). Backed by a
+    -- [channel base name] = true table returned by getTable(). Used twice: ping channels
+    -- and the "don't sync" list.
+    local function MakeChannelPicker(parent, popupName, x, y, labelBase, getTable, tooltip)
+        local btn = MakeDropdown(parent, 180)
+        btn:SetPoint("TOPLEFT", x, y)
+        local function count() local n = 0; for _ in pairs(getTable() or {}) do n = n + 1 end; return n end
+        local function refreshBtn()
+            local n = count()
+            btn.Text:SetText(n > 0 and (labelBase .. ": " .. n) or (labelBase .. "..."))
         end
-        for _, r in ipairs(chanRows) do r:Hide() end
-        chanPop.empty:SetShown(#names == 0)
-        for i, nm in ipairs(names) do
-            local r = chanRows[i]
-            if not r then
-                r = CreateFrame("CheckButton", nil, chanPop, "UICheckButtonTemplate")
-                r:SetSize(22, 22)
-                r.lbl = r:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-                r.lbl:SetPoint("LEFT", r, "RIGHT", 2, 0); r.lbl:SetJustifyH("LEFT")
-                chanRows[i] = r
-            end
-            r._name = nm; r.lbl:SetText(nm)
-            r:SetChecked(DB().ping.channels[nm] == true)
-            r:SetScript("OnClick", function(self)
-                DB().ping.channels[self._name] = self:GetChecked() and true or nil
-                refreshChanBtn()
+        refreshBtn()
+        if tooltip then
+            btn:HookScript("OnEnter", function(self)
+                GameTooltip:SetOwner(self, "ANCHOR_RIGHT"); GameTooltip:AddLine(labelBase)
+                GameTooltip:AddLine(tooltip, 0.8, 0.8, 0.8, true); GameTooltip:Show()
             end)
-            r:ClearAllPoints(); r:SetPoint("TOPLEFT", 6, -4 - (i - 1) * 22); r:Show()
+            btn:HookScript("OnLeave", function() GameTooltip:Hide() end)
         end
-        chanPop:SetSize(220, math.max(1, #names) * 22 + 10)
+        local pop, rows = nil, {}
+        local function refreshPop()
+            local list = { GetChannelList() }   -- id, name, disabled, id, name, disabled, ...
+            local names, seen = {}, {}
+            for i = 2, #list, 3 do
+                local nm = list[i]
+                if type(nm) == "string" and nm ~= "" then names[#names + 1] = nm; seen[nm] = true end
+            end
+            -- Also list already-ticked channels you're not currently in, so they can be unticked.
+            for nm in pairs(getTable() or {}) do if not seen[nm] then names[#names + 1] = nm end end
+            for _, r in ipairs(rows) do r:Hide() end
+            pop.empty:SetShown(#names == 0)
+            for i, nm in ipairs(names) do
+                local r = rows[i]
+                if not r then
+                    r = CreateFrame("CheckButton", nil, pop, "UICheckButtonTemplate")
+                    r:SetSize(22, 22)
+                    r.lbl = r:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+                    r.lbl:SetPoint("LEFT", r, "RIGHT", 2, 0); r.lbl:SetJustifyH("LEFT")
+                    rows[i] = r
+                end
+                r._name = nm; r.lbl:SetText(nm)
+                r:SetChecked(getTable()[nm] == true)
+                r:SetScript("OnClick", function(self)
+                    getTable()[self._name] = self:GetChecked() and true or nil
+                    refreshBtn()
+                end)
+                r:ClearAllPoints(); r:SetPoint("TOPLEFT", 6, -4 - (i - 1) * 22); r:Show()
+            end
+            pop:SetSize(220, math.max(1, #names) * 22 + 10)
+        end
+        btn:SetScript("OnClick", function()
+            if pop and pop:IsShown() then pop:Hide(); return end
+            if not pop then
+                pop = CreateFrame("Frame", popupName, parent, "BackdropTemplate")
+                pop:SetFrameStrata("TOOLTIP")
+                pop:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8x8",
+                    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border", tile = false, edgeSize = 12,
+                    insets = { left = 3, right = 3, top = 3, bottom = 3 } })
+                pop:SetBackdropColor(0.06, 0.06, 0.08, 1)   -- fully opaque
+                pop.empty = pop:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+                pop.empty:SetPoint("TOPLEFT", 8, -8); pop.empty:SetText("Not in any custom channels.")
+                tinsert(UISpecialFrames, popupName)
+            end
+            refreshPop()
+            pop:ClearAllPoints(); pop:SetPoint("TOPLEFT", btn, "BOTTOMLEFT", 0, -2); pop:Show()
+        end)
+        return btn
     end
-    chanBtn:SetScript("OnClick", function()
-        if chanPop and chanPop:IsShown() then chanPop:Hide(); return end
-        if not chanPop then
-            chanPop = CreateFrame("Frame", "ChatSyncChanPopup", pingGroup, "BackdropTemplate")
-            chanPop:SetFrameStrata("TOOLTIP")
-            chanPop:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8x8",
-                edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border", tile = false, edgeSize = 12,
-                insets = { left = 3, right = 3, top = 3, bottom = 3 } })
-            chanPop:SetBackdropColor(0.06, 0.06, 0.08, 1)   -- fully opaque
-            chanPop.empty = chanPop:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-            chanPop.empty:SetPoint("TOPLEFT", 8, -8); chanPop.empty:SetText("Not in any custom channels.")
-            tinsert(UISpecialFrames, "ChatSyncChanPopup")
-        end
-        refreshChanPop()
-        chanPop:ClearAllPoints(); chanPop:SetPoint("TOPLEFT", chanBtn, "BOTTOMLEFT", 0, -2); chanPop:Show()
-    end)
+    MakeChannelPicker(pingGroup, "ChatSyncChanPopup", 4, -50, "Custom channels", function() return DB().ping.channels end)
+    MakeChannelPicker(pingGroup, "ChatSyncIgnorePopup", 200, -50, "Don't sync channels", function() return DB().ignoreChannels end,
+        "Channels ticked here are never saved into a profile and never added or removed when a profile is applied - "
+        .. "use it for password-protected channels that addons join on their own.")
 
     local saveLbl = panel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
     saveLbl:SetPoint("TOPLEFT", 16, -142); saveLbl:SetText("Or save as a new profile:")

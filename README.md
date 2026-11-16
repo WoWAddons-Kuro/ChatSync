@@ -49,6 +49,10 @@ page or `/cs apply Main`.
 
 - Custom/numbered channels (a "world" or "LFG" channel) are re-joined by name, but
   channel order/numbering can differ per character — a WoW limitation, not a bug.
+- **Don't sync channels** (settings page, next to the ping channel picker): tick any
+  channel you want left alone — e.g. password-protected channels an addon joins for
+  you. Ticked channels are never saved into a profile and never added/removed on apply.
+  (WoW gives addons no way to detect a channel password, hence the manual list.)
 - Profiles are stored account-wide; existing characters are never changed
   automatically — only brand-new ones (and only if you let them).
 
