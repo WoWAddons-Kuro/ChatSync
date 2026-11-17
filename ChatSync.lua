@@ -390,7 +390,7 @@ local function DB()
     if ChatSyncDB.autoSave == nil then ChatSyncDB.autoSave = true end
     -- Chat message pings. Whisper pings ON by default (low-frequency, important); guild/party
     -- stay off to avoid spam. pingSound = a sound key (built-in or "lsm:<name>").
-    ChatSyncDB.ping = ChatSyncDB.ping or { whisper = true, guild = false, party = false }
+    ChatSyncDB.ping = ChatSyncDB.ping or { whisper = false, guild = false, party = false }
     ChatSyncDB.ping.channels = ChatSyncDB.ping.channels or {}   -- [custom channel base name] = true
     ChatSyncDB.pingSound = ChatSyncDB.pingSound or "blip"   -- "Tech blip" (falls back if nil here)
     -- Channels excluded from profiles entirely (never captured, never touched on apply).
@@ -1013,6 +1013,29 @@ local function ShowChooser()
         chooser.skip = CreateFrame("Button", nil, chooser, "UIPanelButtonTemplate")
         chooser.skip:SetSize(248, 22); chooser.skip:SetText("Keep default chat (skip)")
         chooser.skip:SetScript("OnClick", function() chooser:Hide() end)
+        -- Chat ping quick-setup: the three main toggles right here, so a new character
+        -- can decide about sounds without hunting for the settings page. All default to off.
+        chooser.pingLbl = chooser:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        chooser.pingLbl:SetText("Ping sound on:")
+        chooser.pingHint = chooser:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+        chooser.pingHint:SetText("sound & custom channels: /cs")
+        chooser.pingChecks = {}
+        local function PingCheck(key, label)
+            local cb = CreateFrame("CheckButton", nil, chooser, "UICheckButtonTemplate")
+            cb:SetSize(22, 22)
+            cb.lbl = cb:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            cb.lbl:SetPoint("LEFT", cb, "RIGHT", 0, 0); cb.lbl:SetText(label)
+            cb._key = key
+            cb:SetScript("OnClick", function(self)
+                DB().ping[self._key] = self:GetChecked() and true or false
+                if DB().ping[self._key] then PlayPing() end   -- preview when switching on
+            end)
+            chooser.pingChecks[#chooser.pingChecks + 1] = cb
+            return cb
+        end
+        PingCheck("whisper", "Whisper")
+        PingCheck("guild",   "Guild")
+        PingCheck("party",   "Party")
         tinsert(UISpecialFrames, "ChatSyncChooser")   -- Esc = skip
     end
 
@@ -1030,8 +1053,18 @@ local function ShowChooser()
         b:SetScript("OnClick", function() chooser:Hide(); ApplyProfile(n) end)
         b:Show()
     end
-    chooser.skip:ClearAllPoints(); chooser.skip:SetPoint("TOP", 0, top - #names * 28 - 4)
-    chooser:SetSize(290, 66 + #names * 28 + 22 + 18)
+    -- Ping row sits under the profile buttons; Skip under that.
+    local pingY = top - #names * 28 - 6
+    chooser.pingLbl:ClearAllPoints(); chooser.pingLbl:SetPoint("TOPLEFT", 21, pingY)
+    local x = 21
+    for _, cb in ipairs(chooser.pingChecks) do
+        cb:ClearAllPoints(); cb:SetPoint("TOPLEFT", x, pingY - 12)
+        cb:SetChecked(db.ping and db.ping[cb._key] == true)
+        x = x + 22 + cb.lbl:GetStringWidth() + 10
+    end
+    chooser.pingHint:ClearAllPoints(); chooser.pingHint:SetPoint("TOPLEFT", 21, pingY - 36)
+    chooser.skip:ClearAllPoints(); chooser.skip:SetPoint("TOP", 0, pingY - 50)
+    chooser:SetSize(290, 66 + #names * 28 + 6 + 50 + 22 + 18)
     chooser:Show()
 end
 
@@ -1106,7 +1139,7 @@ local NEWS_LINES = {
     "  - Pick a |cffffd100sound|r and click the speaker to preview it.",
     "  - Ping on |cffffd100Whisper / Guild / Party|r, or tick specific |cffffd100custom channels|r.",
     " ",
-    "Whispers ping by default. Your own messages never ping, and you can turn any of it off in the same place.",
+    "All pings are off until you turn them on (the new-character popup offers the toggles too). Your own messages never ping.",
 }
 local newsFrame
 local function ShowNews()

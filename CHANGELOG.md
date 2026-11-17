@@ -20,6 +20,13 @@
   that the profile doesn't (General / Combat Log / Voice are never closed).
 - New windows are created without Blizzard's default filter set, so nothing leaks into them.
 
+### Chat pings
+
+- **Pings are off by default** now (previously whispers pinged out of the box). Existing
+  settings are kept.
+- The **new-character popup** has Whisper / Guild / Party ping toggles right in it, so you can
+  decide about sounds while picking a layout. Sound choice and custom channels stay in `/cs`.
+
 ### Don't sync certain channels
 
 - New **Don't sync channels** picker next to the ping channel picker. Tick a channel and it is
