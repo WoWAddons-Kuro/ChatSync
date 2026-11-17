@@ -413,6 +413,8 @@ local function DB()
     ChatSyncDB = ChatSyncDB or {}
     ChatSyncDB.profiles = ChatSyncDB.profiles or {}
     ChatSyncDB.seen = ChatSyncDB.seen or {}
+    -- Characters we've already offered a profile to (chooser shown / auto-applied / mode off).
+    ChatSyncDB.offered = ChatSyncDB.offered or {}
     ChatSyncDB.bindings = ChatSyncDB.bindings or {}        -- [charKey] = profile it keeps updated
     ChatSyncDB.onNewChar = ChatSyncDB.onNewChar or "ask"   -- "ask" | "auto" | "off"
     if ChatSyncDB.minimapShown == nil then ChatSyncDB.minimapShown = true end
@@ -1228,9 +1230,10 @@ SlashCmdList["CHATSYNC"] = function(input)
 end
 
 -- ---------------------------------------------------------------------------
--- New-character auto-apply: first time we see a character AND it looks freshly
--- created (level 1), apply the default profile. Existing characters (already seen,
--- or above level 1) are never auto-touched.
+-- First login on a character ChatSync hasn't offered a profile to yet: show the
+-- chooser (mode "ask"), or - mode "auto", level 1 only - apply the default silently.
+-- A character is only ever offered once (db.offered); nothing is applied unasked
+-- to a character that already has a layout of its own.
 -- ---------------------------------------------------------------------------
 -- Incoming chat events that can trigger a ping, mapped to their toggle key. _INFORM events
 -- (your own outgoing whispers) are deliberately not registered.
@@ -1282,9 +1285,9 @@ f:SetScript("OnEvent", function(_, event, ...)
         if C_Timer and C_Timer.After then C_Timer.After(4, ShowNews) end
     end
     local key = CharKey()
-    if db.seen[key] then
-        -- Known character: if a profile predates size/position support, pop a prompt
-        -- (not just a settings marker) offering to re-save it from this character.
+    -- A character we've already offered a profile to: only check for stale profiles
+    -- (a profile saved by an older version) and pop the re-save prompt if needed.
+    if db.offered[key] then
         local staleName
         for nm, snap in pairs(db.profiles) do if IsStale(snap) then staleName = nm; break end end
         if staleName and C_Timer and C_Timer.After then
@@ -1296,18 +1299,24 @@ f:SetScript("OnEvent", function(_, event, ...)
         end
         return
     end
-    db.seen[key] = true
-    -- Only act on a freshly-created character (level 1) that has profiles to offer.
-    if (UnitLevel("player") or 1) > 1 or not next(db.profiles) then return end
+    -- Unknown character (never offered). Nothing to offer until a profile exists - leave
+    -- it un-offered so the prompt appears once there is one.
+    if not next(db.profiles) then return end
     local mode = db.onNewChar or "ask"
-    -- Wait for the default chat system to finish loading, then act.
-    if mode == "ask" then
-        C_Timer.After(2, ShowChooser)                 -- popup: pick a profile (or skip)
-    elseif mode == "auto" and db.default and db.profiles[db.default] then
+    if mode == "off" then db.offered[key] = true; return end
+    db.offered[key] = true
+    db.seen[key] = true
+    local isFresh = (UnitLevel("player") or 1) <= 1
+    -- Wait for the default chat system to finish loading, then act. "auto" only applies
+    -- silently to a freshly-created (level 1) character; an existing character with a
+    -- layout of its own gets the chooser instead, so nothing is overwritten unasked.
+    if mode == "auto" and isFresh and db.default and db.profiles[db.default] then
         C_Timer.After(2, function()
             if Apply(db.profiles[db.default]) then
                 msg(("new character - applied your |cffffd100%s|r chat layout."):format(db.default))
             end
         end)
+    else
+        C_Timer.After(2, ShowChooser)                 -- popup: pick a profile (or skip)
     end
 end)

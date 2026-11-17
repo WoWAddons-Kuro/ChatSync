@@ -19,8 +19,9 @@ types, names, colors, transparency, font size, sizes and positions — into an
 ## Features
 
 - **Profiles shared across the whole account.**
-- **New-character prompt** — a fresh character can pop a little window to pick a
-  profile (or auto-apply your default, or do nothing — your choice).
+- **First-login prompt** — the first time you log into a character ChatSync hasn't
+  met, a little window pops up to pick a profile (or skip). Optionally auto-apply
+  your default to brand-new (level 1) characters, or turn the prompt off.
 - **Auto-update** — the character a profile was saved from keeps it current: change
   a chat window and it re-saves into that profile (and on logout). There's also a
   one-click **Save changes** button.
