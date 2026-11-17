@@ -1054,6 +1054,37 @@ end
 HC_OpenChatSyncOptions = OpenOptions
 
 -- ---------------------------------------------------------------------------
+-- Ping quick-setup row: Whisper / Guild / Party checkboxes writing straight to
+-- ChatSyncDB.ping (preview plays when one is switched on). Used by both the
+-- new-character chooser and the What's New window. Call :Refresh() before showing.
+-- ---------------------------------------------------------------------------
+local function BuildPingToggles(parent)
+    local row = CreateFrame("Frame", nil, parent)
+    row:SetSize(260, 24)
+    row.checks = {}
+    local x = 0
+    for _, e in ipairs({ { "whisper", "Whisper" }, { "guild", "Guild" }, { "party", "Party" } }) do
+        local cb = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
+        cb:SetSize(24, 24); cb:SetPoint("LEFT", x, 0)
+        cb.lbl = cb:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        cb.lbl:SetPoint("LEFT", cb, "RIGHT", 0, 0); cb.lbl:SetText(e[2])
+        cb._key = e[1]
+        cb:SetScript("OnClick", function(self)
+            DB().ping[self._key] = self:GetChecked() and true or false
+            if DB().ping[self._key] then PlayPing() end
+        end)
+        row.checks[#row.checks + 1] = cb
+        x = x + 24 + cb.lbl:GetStringWidth() + 12
+    end
+    row:SetWidth(x)
+    function row:Refresh()
+        local p = DB().ping or {}
+        for _, cb in ipairs(self.checks) do cb:SetChecked(p[cb._key] == true) end
+    end
+    return row
+end
+
+-- ---------------------------------------------------------------------------
 -- New-character chooser: a small popup to pick which profile to apply. Shown on
 -- a fresh character when the "New character" setting is "ask". Esc / Skip = leave
 -- the default chat alone.
@@ -1091,29 +1122,12 @@ local function ShowChooser()
         chooser.skip = CreateFrame("Button", nil, chooser, "UIPanelButtonTemplate")
         chooser.skip:SetSize(248, 22); chooser.skip:SetText("Keep default chat (skip)")
         chooser.skip:SetScript("OnClick", function() chooser:Hide() end)
-        -- Chat ping quick-setup: the three main toggles right here, so a new character
-        -- can decide about sounds without hunting for the settings page. All default to off.
+        -- Chat ping quick-setup (shared with the What's New window).
         chooser.pingLbl = chooser:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         chooser.pingLbl:SetText("Ping sound on:")
         chooser.pingHint = chooser:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
         chooser.pingHint:SetText("sound & custom channels: /chatsync")
-        chooser.pingChecks = {}
-        local function PingCheck(key, label)
-            local cb = CreateFrame("CheckButton", nil, chooser, "UICheckButtonTemplate")
-            cb:SetSize(22, 22)
-            cb.lbl = cb:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-            cb.lbl:SetPoint("LEFT", cb, "RIGHT", 0, 0); cb.lbl:SetText(label)
-            cb._key = key
-            cb:SetScript("OnClick", function(self)
-                DB().ping[self._key] = self:GetChecked() and true or false
-                if DB().ping[self._key] then PlayPing() end   -- preview when switching on
-            end)
-            chooser.pingChecks[#chooser.pingChecks + 1] = cb
-            return cb
-        end
-        PingCheck("whisper", "Whisper")
-        PingCheck("guild",   "Guild")
-        PingCheck("party",   "Party")
+        chooser.pings = BuildPingToggles(chooser)
         tinsert(UISpecialFrames, "ChatSyncChooser")   -- Esc = skip
     end
 
@@ -1134,12 +1148,8 @@ local function ShowChooser()
     -- Ping row sits under the profile buttons; Skip under that.
     local pingY = top - #names * 28 - 6
     chooser.pingLbl:ClearAllPoints(); chooser.pingLbl:SetPoint("TOPLEFT", 21, pingY)
-    local x = 21
-    for _, cb in ipairs(chooser.pingChecks) do
-        cb:ClearAllPoints(); cb:SetPoint("TOPLEFT", x, pingY - 12)
-        cb:SetChecked(db.ping and db.ping[cb._key] == true)
-        x = x + 22 + cb.lbl:GetStringWidth() + 10
-    end
+    chooser.pings:ClearAllPoints(); chooser.pings:SetPoint("TOPLEFT", 21, pingY - 12)
+    chooser.pings:Refresh()
     chooser.pingHint:ClearAllPoints(); chooser.pingHint:SetPoint("TOPLEFT", 21, pingY - 36)
     chooser.skip:ClearAllPoints(); chooser.skip:SetPoint("TOP", 0, pingY - 50)
     chooser:SetSize(290, 66 + #names * 28 + 6 + 50 + 22 + 18)
@@ -1240,20 +1250,27 @@ local function ShowNews()
         body:SetJustifyH("LEFT"); body:SetSpacing(4)
         body:SetText(table.concat(NEWS_LINES, "\n"))
 
-        -- Size the frame to the (wrapped) text, then sit the buttons just below it - so the
-        -- copy can never run through the buttons regardless of how lines wrap.
+        -- Ping toggles right here, so the pings can be set up from this window.
+        local pingLbl = newsFrame:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+        pingLbl:SetPoint("TOPLEFT", body, "BOTTOMLEFT", 0, -16); pingLbl:SetText("Ping sound on:")
+        newsFrame.pings = BuildPingToggles(newsFrame)
+        newsFrame.pings:SetPoint("LEFT", pingLbl, "RIGHT", 10, 0)
+
+        -- Size the frame to the (wrapped) text + toggle row, then sit the buttons below -
+        -- so the copy can never run through the buttons regardless of how lines wrap.
         local h = math.max(60, body:GetStringHeight() or 60)
-        newsFrame:SetHeight(54 + h + 22 + 24 + 20)
+        newsFrame:SetHeight(54 + h + 16 + 24 + 22 + 24 + 20)
 
         local openBtn = CreateFrame("Button", nil, newsFrame, "UIPanelButtonTemplate")
         openBtn:SetSize(140, 24); openBtn:SetText("Open settings")
-        openBtn:SetPoint("TOPRIGHT", body, "BOTTOM", -8, -22)
+        openBtn:SetPoint("TOPRIGHT", body, "BOTTOM", -8, -16 - 24 - 22)
         openBtn:SetScript("OnClick", function() newsFrame:Hide(); OpenOptions() end)
         local okBtn = CreateFrame("Button", nil, newsFrame, "UIPanelButtonTemplate")
         okBtn:SetSize(140, 24); okBtn:SetText("Got it")
-        okBtn:SetPoint("TOPLEFT", body, "BOTTOM", 8, -22)
+        okBtn:SetPoint("TOPLEFT", body, "BOTTOM", 8, -16 - 24 - 22)
         okBtn:SetScript("OnClick", function() newsFrame:Hide() end)
     end
+    newsFrame.pings:Refresh()
     newsFrame:Show()
 end
 
