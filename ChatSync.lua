@@ -651,7 +651,7 @@ local function Help()
     print("   |cffffd100/chatsync list|r - list saved profiles")
     print("   |cffffd100/chatsync delete <name>|r - remove a profile")
     print("   |cffffd100/chatsync welcome|r - preview the new-character chooser popup")
-    print("   |cffffd100/cs|r is a short alias for all of the above")
+    print("   |cffffd100/csync|r and |cffffd100/cs|r are short aliases for all of the above")
 end
 
 -- ---------------------------------------------------------------------------
@@ -1096,7 +1096,7 @@ local function ShowChooser()
         chooser.pingLbl = chooser:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         chooser.pingLbl:SetText("Ping sound on:")
         chooser.pingHint = chooser:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-        chooser.pingHint:SetText("sound & custom channels: /cs")
+        chooser.pingHint:SetText("sound & custom channels: /chatsync")
         chooser.pingChecks = {}
         local function PingCheck(key, label)
             local cb = CreateFrame("CheckButton", nil, chooser, "UICheckButtonTemplate")
@@ -1206,14 +1206,14 @@ function EnsureMinimap()
 end
 
 -- ---------------------------------------------------------------------------
--- "What's New": a one-time heads-up after an update, re-openable via /cs news.
+-- "What's New": a one-time heads-up after an update, re-openable via /chatsync news.
 -- Bump NEWS_KEY whenever there's fresh content to surface; it shows once per key.
 -- ---------------------------------------------------------------------------
 local NEWS_KEY = "pings-1"
 local NEWS_LINES = {
     "|cffffd100Chat message pings|r - hear a sound when a message comes in.",
     " ",
-    "Find |cffffd100Chat message pings|r at the bottom of the settings (|cffffd100/cs|r):",
+    "Find |cffffd100Chat message pings|r at the bottom of the settings (|cffffd100/chatsync|r):",
     "  - Pick a |cffffd100sound|r and click the speaker to preview it.",
     "  - Ping on |cffffd100Whisper / Guild / Party|r, or tick specific |cffffd100custom channels|r.",
     " ",

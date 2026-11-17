@@ -29,7 +29,7 @@
 - **Pings are off by default** now (previously whispers pinged out of the box). Existing
   settings are kept.
 - The **new-character popup** has Whisper / Guild / Party ping toggles right in it, so you can
-  decide about sounds while picking a layout. Sound choice and custom channels stay in `/cs`.
+  decide about sounds while picking a layout. Sound choice and custom channels stay in `/chatsync`.
 
 ### Don't sync certain channels
 
@@ -74,7 +74,7 @@ usual prompt offers to update them from the current character.
   same place.
 
 ### Other
-- New **What's New** window after an update, re-openable with `/cs news`.
+- New **What's New** window after an update, re-openable with `/chatsync news`.
 - Settings page cleanup — aligned buttons and tidier dropdowns.
 
 ## 1.0.1

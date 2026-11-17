@@ -30,21 +30,21 @@ types, names, colors, transparency, font size, sizes and positions — into an
 
 ## Usage
 
-Open the settings with **`/chatsync`**, **`/csync`**, or **`/cs`** — or left-click
+Open the settings with **`/chatsync`** (short aliases: `/csync`, `/cs`) — or left-click
 the minimap button (right-click pops the profile chooser).
 
 | Command | What it does |
 |---|---|
-| `/cs save <name>` | Save the current character's chat layout as a profile |
-| `/cs apply <name>` | Apply a profile to the current character |
-| `/cs default <name>` | Set which profile new characters are offered |
-| `/cs list` | List saved profiles |
-| `/cs delete <name>` | Delete a profile |
-| `/cs welcome` | Preview the new-character chooser |
+| `/chatsync save <name>` | Save the current character's chat layout as a profile |
+| `/chatsync apply <name>` | Apply a profile to the current character |
+| `/chatsync default <name>` | Set which profile new characters are offered |
+| `/chatsync list` | List saved profiles |
+| `/chatsync delete <name>` | Delete a profile |
+| `/chatsync welcome` | Preview the new-character chooser |
 
-**Typical flow:** on the character whose chat you like, `/cs save Main`. Make a new
+**Typical flow:** on the character whose chat you like, `/chatsync save Main`. Make a new
 character → it offers to apply "Main". On an existing alt, apply it from the settings
-page or `/cs apply Main`.
+page or `/chatsync apply Main`.
 
 ## Notes
 
