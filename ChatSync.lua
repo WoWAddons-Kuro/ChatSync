@@ -199,9 +199,9 @@ local function Capture()
     end
     -- Active Edit Mode HUD layout, by name (Mainline / WoW Forever only). Character-type
     -- layouts don't exist on other characters, so those are deliberately not recorded.
-    if C_EditMode and C_EditMode.GetLayouts then
-        local ok, info = pcall(C_EditMode.GetLayouts)
-        local active = ok and info and info.layouts and info.layouts[info.activeLayout]
+    do
+        local layouts, activeIdx = EditModeLayouts()
+        local active = layouts and activeIdx and layouts[activeIdx]
         if active and active.layoutName and active.layoutType ~= (Enum and Enum.EditModeLayoutType and Enum.EditModeLayoutType.Character) then
             snap.editModeLayout = active.layoutName
         end
@@ -244,6 +244,31 @@ end
 local function IsBuiltinWindow(cf, i)
     if IsBuiltinChatWindow then return IsBuiltinChatWindow(cf) end
     return i <= 2   -- Classic Era: General + Combat Log
+end
+
+-- Edit Mode layout list in the SAME index space as layoutInfo.activeLayout.
+-- C_EditMode.GetLayouts().layouts holds only saved layouts, but activeLayout counts
+-- the two presets (Modern, Classic) first - EditModeManagerFrame prepends them in Lua.
+-- Looking a name up in the raw list is therefore off by the preset count (and
+-- SetActiveLayout(rawIndex) lands on a preset). Prefer the manager's merged list.
+local function EditModeLayouts()
+    if not C_EditMode or not C_EditMode.GetLayouts then return nil end
+    local mgr = EditModeManagerFrame
+    if mgr and mgr.layoutInfo and mgr.layoutInfo.layouts and mgr.layoutInfo.activeLayout then
+        return mgr.layoutInfo.layouts, mgr.layoutInfo.activeLayout
+    end
+    local ok, info = pcall(C_EditMode.GetLayouts)
+    if not ok or not info or not info.layouts then return nil end
+    local list = {}
+    local okp, presets = pcall(function() return EditModePresetLayoutManager:GetCopyOfPresetLayouts() end)
+    if okp and type(presets) == "table" then
+        for _, l in ipairs(presets) do list[#list + 1] = l end
+    else
+        list[1] = { layoutName = "Modern", layoutType = 0 }   -- Enum.EditModeLayoutType.Preset
+        list[2] = { layoutName = "Classic", layoutType = 0 }
+    end
+    for _, l in ipairs(info.layouts) do list[#list + 1] = l end
+    return list, info.activeLayout
 end
 
 local function Apply(snap)
@@ -377,22 +402,28 @@ local function Apply(snap)
 
     -- Edit Mode HUD layout. Account layouts exist on every character but the ACTIVE pick
     -- is per-character; select the saved one by name. Presets (Modern / Classic) count too.
-    if snap.editModeLayout and C_EditMode and C_EditMode.GetLayouts and C_EditMode.SetActiveLayout then
+    if snap.editModeLayout and C_EditMode and C_EditMode.SetActiveLayout then
         if InCombatLockdown() then
             msg("Edit Mode layout |cffffd100" .. snap.editModeLayout .. "|r will not be switched during combat - re-apply after the fight.")
         else
-            local ok, info = pcall(C_EditMode.GetLayouts)
+            local layouts, active = EditModeLayouts()
             local target
-            if ok and info and info.layouts then
-                for idx, l in ipairs(info.layouts) do
+            if layouts then
+                for idx, l in ipairs(layouts) do
                     if l.layoutName == snap.editModeLayout then target = idx; break end
                 end
             end
             if not target then
                 msg("Edit Mode layout |cffffd100" .. snap.editModeLayout .. "|r isn't available on this character (character-specific layout?) - HUD layout left as is.")
-            elseif target ~= info.activeLayout then
-                local cur = info.layouts[info.activeLayout] and info.layouts[info.activeLayout].layoutName or "?"
-                local ok2, err = pcall(C_EditMode.SetActiveLayout, target)
+            elseif target ~= active then
+                local cur = layouts[active] and layouts[active].layoutName or "?"
+                -- Go through the manager when we can: it updates its own layoutInfo and the UI.
+                local ok2, err
+                if EditModeManagerFrame and EditModeManagerFrame.SelectLayout then
+                    ok2, err = pcall(EditModeManagerFrame.SelectLayout, EditModeManagerFrame, target)
+                else
+                    ok2, err = pcall(C_EditMode.SetActiveLayout, target)
+                end
                 if ok2 then
                     msg(("Edit Mode layout: |cffffd100%s|r -> |cffffd100%s|r."):format(cur, snap.editModeLayout))
                 else
@@ -1240,9 +1271,16 @@ SlashCmdList["CHATSYNC"] = function(input)
     elseif cmd == "welcome" or cmd == "chooser" or cmd == "preview" then
         if next(DB().profiles) then ShowChooser() else msg("no profiles to choose from yet - save one first.") end
     elseif cmd == "news" or cmd == "whatsnew" then ShowNews()
+    elseif cmd == "reset" then StaticPopup_Show("CHATSYNC_RESET")   -- wipe ALL saved data (cold-start test)
     elseif cmd == "help" then Help()
     else OpenOptions() end   -- bare /chatsync opens the settings page
 end
+StaticPopupDialogs["CHATSYNC_RESET"] = {
+    text = "Chat Sync: delete ALL saved data (every profile, binding and setting) and reload the UI?\n\nThis is for testing a cold start. It cannot be undone.",
+    button1 = "Delete everything", button2 = CANCEL,
+    OnAccept = function() ChatSyncDB = nil; ReloadUI() end,
+    timeout = 0, whileDead = true, hideOnEscape = true, preferredIndex = 3, showAlert = true,
+}
 
 -- ---------------------------------------------------------------------------
 -- First login on a character ChatSync hasn't offered a profile to yet: show the
@@ -1290,8 +1328,12 @@ f:SetScript("OnEvent", function(_, event, ...)
         if bound and db.profiles[bound] then db.profiles[bound] = Capture() end
         return
     end
-    BuildOptions()                        -- register the settings page in the AddOns list
-    EnsureMinimap()                       -- minimap button
+    -- Register the settings page and the minimap button. If either throws, SAY SO and
+    -- carry on - a hidden error here used to kill the first-login prompt below as well.
+    local okB, errB = pcall(BuildOptions)
+    if not okB then msg("|cffff4040settings page failed to build:|r " .. tostring(errB)) end
+    local okM, errM = pcall(EnsureMinimap)
+    if not okM then msg("|cffff4040minimap button failed:|r " .. tostring(errM)) end
     if C_Timer and C_Timer.After then C_Timer.After(5, function() suppressAutoSave = false end) end
     local db = DB()
     -- One-time "What's New" heads-up after an update (shown once per NEWS_KEY).
