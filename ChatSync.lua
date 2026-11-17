@@ -522,7 +522,14 @@ end
 
 local function DoSaveProfile(name)
     local db = DB()
-    db.profiles[name] = Capture()
+    -- Capture runs a lot of client API; if any of it throws on this client, say so loudly
+    -- instead of the Save click silently doing nothing.
+    local ok, snap = pcall(Capture)
+    if not ok then
+        msg("|cffff4040save FAILED - error reading the chat layout:|r " .. tostring(snap))
+        return
+    end
+    db.profiles[name] = snap
     db.bindings[CharKey()] = name             -- this character now keeps the profile current (logout re-save)
     if not db.default then db.default = name end
     local def = (db.default == name) and " (now the default for new characters)" or ""
@@ -591,6 +598,15 @@ end
 
 -- Confirmation popups (avoid accidental overwrite / deletion). The profile name is
 -- passed as the dialog's data and handed to OnAccept.
+
+-- Text typed into a StaticPopup's edit box, whichever key this client exposes it under:
+-- Classic uses dialog.editBox, Mainline dialog.EditBox, and both have the named child
+-- "<DialogName>EditBox". Returns "" when none is found.
+local function PopupEditText(dialog)
+    local eb = dialog.EditBox or dialog.editBox or (dialog.GetName and _G[dialog:GetName() .. "EditBox"])
+    if not eb or not eb.GetText then return "" end
+    return strtrim(eb:GetText() or "")
+end
 StaticPopupDialogs["CHATSYNC_OVERWRITE"] = {
     text = "Chat Sync: overwrite the profile \"%s\" with this character's current chat layout?",
     button1 = YES, button2 = NO,
@@ -615,16 +631,16 @@ StaticPopupDialogs["CHATSYNC_NEWNAME"] = {
     button1 = "Save", button2 = CANCEL,
     hasEditBox = true, editBoxWidth = 200,
     OnAccept = function(self)
-        local eb = self.EditBox or self.editBox
-        local n = eb and strtrim(eb:GetText() or "") or ""
-        if n ~= "" then SaveProfile(n) end
+        local n = PopupEditText(self)
+        if n == "" then msg("no profile name entered - nothing saved."); return end
+        SaveProfile(n)
     end,
     EditBoxOnEnterPressed = function(self)
         local p = self:GetParent()
-        local eb = p.EditBox or p.editBox
-        local n = eb and strtrim(eb:GetText() or "") or ""
-        if n ~= "" then SaveProfile(n) end
+        local n = PopupEditText(p)
         p:Hide()
+        if n == "" then msg("no profile name entered - nothing saved."); return end
+        SaveProfile(n)
     end,
     EditBoxOnEscapePressed = function(self) self:GetParent():Hide() end,
     timeout = 0, whileDead = true, hideOnEscape = true, preferredIndex = 3,
