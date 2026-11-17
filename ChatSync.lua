@@ -391,9 +391,19 @@ local function Apply(snap)
             if not target then
                 msg("Edit Mode layout |cffffd100" .. snap.editModeLayout .. "|r isn't available on this character (character-specific layout?) - HUD layout left as is.")
             elseif target ~= info.activeLayout then
-                pcall(C_EditMode.SetActiveLayout, target)
+                local cur = info.layouts[info.activeLayout] and info.layouts[info.activeLayout].layoutName or "?"
+                local ok2, err = pcall(C_EditMode.SetActiveLayout, target)
+                if ok2 then
+                    msg(("Edit Mode layout: |cffffd100%s|r -> |cffffd100%s|r."):format(cur, snap.editModeLayout))
+                else
+                    msg(("Edit Mode layout switch to |cffffd100%s|r FAILED: %s"):format(snap.editModeLayout, tostring(err)))
+                end
+            else
+                msg("Edit Mode layout |cffffd100" .. snap.editModeLayout .. "|r is already active.")
             end
         end
+    elseif not snap.editModeLayout then
+        msg("profile has no HUD layout saved (re-save it on the source character to record one).")
     end
 
     suppressAutoSave = prevSuppress
@@ -485,7 +495,9 @@ local function DoSaveProfile(name)
     db.bindings[CharKey()] = name             -- this character now keeps the profile current (logout re-save)
     if not db.default then db.default = name end
     local def = (db.default == name) and " (now the default for new characters)" or ""
-    msg(("saved profile |cffffd100%s|r - %d windows%s."):format(name, db.profiles[name].count or 0, def))
+    local lay = db.profiles[name].editModeLayout
+    msg(("saved profile |cffffd100%s|r - %d windows, HUD layout: |cffffd100%s|r%s."):format(
+        name, db.profiles[name].count or 0, lay or "(none - character-specific or no Edit Mode)", def))
     if RefreshRows then RefreshRows() end
 end
 
@@ -518,7 +530,8 @@ local function ListProfiles()
     for name, snap in pairs(db.profiles) do
         any = true
         local star = (name == db.default) and " |cff66ff66(default)|r" or ""
-        print(("   |cffffd100%s|r - %d windows%s"):format(name, snap.count or 0, star))
+        local lay = snap.editModeLayout and (" - HUD layout: |cffffd100" .. snap.editModeLayout .. "|r") or " - HUD layout: (none saved)"
+        print(("   |cffffd100%s|r - %d windows%s%s"):format(name, snap.count or 0, lay, star))
     end
     if not any then print("   (none yet - /chatsync save <name> on the character whose chat you like)") end
 end
@@ -677,6 +690,8 @@ function RefreshRows()
         if n == db.default then mark = mark .. "  |cff66ff66(default)|r" end
         if db.bindings[key] == n then mark = mark .. "  |cff66ccff(syncs here)|r" end
         if IsStale(db.profiles[n]) then mark = mark .. "  |cffff8800(re-save for size/pos)|r" end
+        local lay = db.profiles[n].editModeLayout
+        if lay then mark = mark .. "  |cff888888HUD: " .. lay .. "|r" end
         r:ClearAllPoints(); r:SetPoint("TOPLEFT", 16, -220 - (i - 1) * 26)
         r.label:SetText(n .. mark)
         r.apply:SetScript("OnClick", function() ApplyProfile(n) end)
