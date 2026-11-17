@@ -19,6 +19,10 @@
 - **Stray windows are closed.** Applying a profile closes extra custom windows the character has
   that the profile doesn't (General / Combat Log / Voice are never closed).
 - New windows are created without Blizzard's default filter set, so nothing leaks into them.
+- **Edit Mode HUD layout follows the profile.** The profile remembers which Edit Mode layout
+  was active (by name) and selects it on apply. Account layouts and the Modern / Classic presets
+  work; character-specific layouts can't exist on other characters and are left alone. Changing
+  layout on a syncing character re-saves the profile.
 
 ### Chat pings
 

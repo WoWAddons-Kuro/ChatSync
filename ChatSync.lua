@@ -197,6 +197,15 @@ local function Capture()
             snap.colors[ctype] = { r = info.r, g = info.g, b = info.b, cls = info.colorNameByClass and true or false }
         end
     end
+    -- Active Edit Mode HUD layout, by name (Mainline / WoW Forever only). Character-type
+    -- layouts don't exist on other characters, so those are deliberately not recorded.
+    if C_EditMode and C_EditMode.GetLayouts then
+        local ok, info = pcall(C_EditMode.GetLayouts)
+        local active = ok and info and info.layouts and info.layouts[info.activeLayout]
+        if active and active.layoutName and active.layoutType ~= (Enum and Enum.EditModeLayoutType and Enum.EditModeLayoutType.Character) then
+            snap.editModeLayout = active.layoutName
+        end
+    end
     snap.count = #snap.windows
     snap.v = SNAP_VERSION
     return snap
@@ -363,6 +372,27 @@ local function Apply(snap)
         for ctype, c in pairs(snap.colors) do
             if c.r then pcall(ChangeChatColor, ctype, c.r, c.g, c.b) end
             if c.cls ~= nil and SetChatColorNameByClass then pcall(SetChatColorNameByClass, ctype, c.cls) end
+        end
+    end
+
+    -- Edit Mode HUD layout. Account layouts exist on every character but the ACTIVE pick
+    -- is per-character; select the saved one by name. Presets (Modern / Classic) count too.
+    if snap.editModeLayout and C_EditMode and C_EditMode.GetLayouts and C_EditMode.SetActiveLayout then
+        if InCombatLockdown() then
+            msg("Edit Mode layout |cffffd100" .. snap.editModeLayout .. "|r will not be switched during combat - re-apply after the fight.")
+        else
+            local ok, info = pcall(C_EditMode.GetLayouts)
+            local target
+            if ok and info and info.layouts then
+                for idx, l in ipairs(info.layouts) do
+                    if l.layoutName == snap.editModeLayout then target = idx; break end
+                end
+            end
+            if not target then
+                msg("Edit Mode layout |cffffd100" .. snap.editModeLayout .. "|r isn't available on this character (character-specific layout?) - HUD layout left as is.")
+            elseif target ~= info.activeLayout then
+                pcall(C_EditMode.SetActiveLayout, target)
+            end
         end
     end
 
@@ -1219,8 +1249,11 @@ local f = CreateFrame("Frame")
 f:RegisterEvent("PLAYER_LOGIN")
 f:RegisterEvent("PLAYER_LOGOUT")
 f:RegisterEvent("CHAT_MSG_CHANNEL")
+-- Edit Mode: the active HUD layout changed (or layouts were renamed/added) -> re-save a bound profile.
+if C_EditMode then pcall(f.RegisterEvent, f, "EDIT_MODE_LAYOUTS_UPDATED") end
 for ev in pairs(PING_EVENT) do f:RegisterEvent(ev) end
 f:SetScript("OnEvent", function(_, event, ...)
+    if event == "EDIT_MODE_LAYOUTS_UPDATED" then ScheduleAutoSave(); return end
     local ptype = PING_EVENT[event]
     if ptype then
         if ChatSyncDB and ChatSyncDB.ping and ChatSyncDB.ping[ptype] and NotSelf(select(2, ...)) then PlayPing() end
