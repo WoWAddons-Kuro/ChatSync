@@ -138,6 +138,10 @@ local function CharKey()
     return (UnitName("player") or "?") .. "-" .. (GetRealmName() or "?")
 end
 
+-- Forward declaration: defined below (next to Apply) but needed by Capture. A plain
+-- "local function" further down would be invisible here and resolve to a nil global.
+local EditModeLayouts
+
 -- ---------------------------------------------------------------------------
 -- Capture: read the current character's chat window layout into a snapshot.
 -- ---------------------------------------------------------------------------
@@ -251,7 +255,7 @@ end
 -- the two presets (Modern, Classic) first - EditModeManagerFrame prepends them in Lua.
 -- Looking a name up in the raw list is therefore off by the preset count (and
 -- SetActiveLayout(rawIndex) lands on a preset). Prefer the manager's merged list.
-local function EditModeLayouts()
+function EditModeLayouts()
     if not C_EditMode or not C_EditMode.GetLayouts then return nil end
     local mgr = EditModeManagerFrame
     if mgr and mgr.layoutInfo and mgr.layoutInfo.layouts and mgr.layoutInfo.activeLayout then
