@@ -680,6 +680,7 @@ end
 -- ---------------------------------------------------------------------------
 local panel, optCategory, emptyText, updateBtn
 local rowPool = {}
+local ROW_H = 38   -- profile row pitch: name+tags line, info line (HUD layout / windows), gap
 
 -- Label the big "save" button by binding state: update the bound profile, or (if this
 -- character isn't a source yet) prompt for a new profile name.
@@ -722,13 +723,18 @@ function RefreshRows()
         local r = rowPool[i]
         if not r then
             r = CreateFrame("Frame", nil, panel)
-            r:SetSize(540, 24)
+            r:SetSize(540, 34)
             r.label = r:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
-            r.label:SetPoint("LEFT", 6, 0); r.label:SetWidth(196); r.label:SetJustifyH("LEFT")
+            r.label:SetPoint("TOPLEFT", 6, -2); r.label:SetWidth(196); r.label:SetJustifyH("LEFT")
             r.label:SetWordWrap(false)   -- one line; long name+tags truncate instead of overflowing the row
+            -- Second line: what the profile contains (HUD layout, window count). Full row width
+            -- so the layout name is never truncated behind the tags above.
+            r.info = r:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
+            r.info:SetPoint("TOPLEFT", 6, -18); r.info:SetWidth(520); r.info:SetJustifyH("LEFT")
+            r.info:SetWordWrap(false)
             -- Uniform, evenly-spaced action buttons (aligned across every row).
             r.apply = CreateFrame("Button", nil, r, "UIPanelButtonTemplate")
-            r.apply:SetSize(74, 20); r.apply:SetText("Apply"); r.apply:SetPoint("LEFT", 210, 0)
+            r.apply:SetSize(74, 20); r.apply:SetText("Apply"); r.apply:SetPoint("TOPLEFT", 210, -1)
             r.def = CreateFrame("Button", nil, r, "UIPanelButtonTemplate")
             r.def:SetSize(74, 20); r.def:SetText("Default"); r.def:SetPoint("LEFT", r.apply, "RIGHT", 8, 0)
             r.src = CreateFrame("Button", nil, r, "UIPanelButtonTemplate")
@@ -740,11 +746,12 @@ function RefreshRows()
         local mark = ""
         if n == db.default then mark = mark .. "  |cff66ff66(default)|r" end
         if db.bindings[key] == n then mark = mark .. "  |cff66ccff(syncs here)|r" end
-        if IsStale(db.profiles[n]) then mark = mark .. "  |cffff8800(re-save for size/pos)|r" end
-        local lay = db.profiles[n].editModeLayout
-        if lay then mark = mark .. "  |cff888888HUD: " .. lay .. "|r" end
-        r:ClearAllPoints(); r:SetPoint("TOPLEFT", 16, -220 - (i - 1) * 26)
+        if IsStale(db.profiles[n]) then mark = mark .. "  |cffff8800(re-save)|r" end
+        local snap = db.profiles[n]
+        r:ClearAllPoints(); r:SetPoint("TOPLEFT", 16, -220 - (i - 1) * ROW_H)
         r.label:SetText(n .. mark)
+        r.info:SetText(("%d windows  |cff666666-|r  HUD layout: %s"):format(snap.count or 0,
+            snap.editModeLayout and ("|cffaaaaaa" .. snap.editModeLayout .. "|r") or "|cffff8800(none saved - re-save on the source character)|r"))
         r.apply:SetScript("OnClick", function() ApplyProfile(n) end)
         r.def:SetScript("OnClick", function() SetDefault(n); RefreshRows() end)
         r.src:SetText(db.bindings[key] == n and "Unsync" or "Sync here")
@@ -759,7 +766,7 @@ function RefreshRows()
     -- Park the "Chat message pings" group just below the (variable-length) profile list.
     if panel.pingGroup then
         panel.pingGroup:ClearAllPoints()
-        panel.pingGroup:SetPoint("TOPLEFT", 16, -220 - math.max(#names, 1) * 26 - 6)
+        panel.pingGroup:SetPoint("TOPLEFT", 16, -220 - math.max(#names, 1) * ROW_H - 6)
     end
     RefreshUpdateBtn()
 end
